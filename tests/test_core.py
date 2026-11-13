@@ -19,11 +19,19 @@ class RulesTest(unittest.TestCase):
         cases = [
             {"mode": "exe", "target": "relative/brave", "download_kib": 100},
             {"mode": "name", "target": "foo;rm -rf", "download_kib": 100},
-            {"mode": "exe", "target": "/usr/bin/brave"},
+            {"mode": "name", "target": "!!!", "download_kib": 100},
         ]
         for case in cases:
             with self.subTest(case=case), self.assertRaises(RuleError):
                 normalize_rule(case, owner=1000, scope="user")
+
+    def test_unlimited_exception_rule(self):
+        exception = normalize_rule(
+            {"mode": "name", "target": "ssh", "download_kib": None, "upload_kib": None},
+            owner=1000, scope="user",
+        )
+        self.assertIsNone(exception["download_kib"])
+        self.assertIsNone(exception["upload_kib"])
 
     def test_per_executable_match(self):
         brave = normalize_rule(
