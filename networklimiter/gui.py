@@ -278,7 +278,7 @@ class Window(QMainWindow):
         self.autostart.setChecked(AUTOSTART.exists())
         self.autostart.toggled.connect(self.set_autostart)
         v.addWidget(self.autostart)
-        self.pause_check = QCheckBox("Pause limits for my user")
+        self.pause_check = QCheckBox("Pause my custom user rules and PID overrides")
         self.pause_check.toggled.connect(self.pause_changed)
         v.addWidget(self.pause_check)
         self.system_pause = QCheckBox("Pause system-wide rules (administrator)")
@@ -290,8 +290,8 @@ class Window(QMainWindow):
         <h3>How limits are applied</h3>
         <p>Each network-owning Linux process (PID) is limited independently
         using cgroup/eBPF filtering. 100 KiB/s equals approximately 819 kbit/s.
-        If the global default is enabled, it limits every matching network-owning PID; "
-        "otherwise unmatched processes remain unlimited.</p>
+        If the global default is enabled, it limits every matching network-owning PID;
+        otherwise unmatched processes remain unlimited.</p>
         <h3>Important limitations</h3>
         <p>The backend is a <b>packet policer</b>, not a smooth traffic shaper.
         It drops packets when limits are exceeded. Actual download throughput may
@@ -311,7 +311,7 @@ class Window(QMainWindow):
         self.tray.setToolTip("NetworkLimiter")
         menu = QMenu()
         menu.addAction("Open NetworkLimiter", self.open_window)
-        self.tray_pause = QAction("Pause my limits", self)
+        self.tray_pause = QAction("Pause my personal rules", self)
         self.tray_pause.setCheckable(True)
         self.tray_pause.triggered.connect(self.tray_pause_changed)
         menu.addAction(self.tray_pause)
@@ -361,7 +361,7 @@ class Window(QMainWindow):
             return
         self.banner.setStyleSheet("color:#7fe5cc")
         self.banner.setText(
-            "● Service connected — cgroup/eBPF active"
+            "● Daemon connected — pidnl backend reachable"
             if not data["backend_error"] else f"● Backend warning: {data['backend_error']}")
         self.rules = data["rules"]
         self.procs = data["processes"]
@@ -438,6 +438,10 @@ class Window(QMainWindow):
     def edit_rule(self):
         rule = self.selected(self.rule_table, self.rules)
         if rule:
+            if rule["scope"] == "system" and not self.admin:
+                QMessageBox.warning(self, "Administrator required",
+                                    "Editing system-wide rules requires networklimiter-admin.")
+                return
             self._rule_dialog(rule)
 
     def _rule_dialog(self, old=None):
