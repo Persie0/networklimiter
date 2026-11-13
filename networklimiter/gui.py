@@ -223,7 +223,11 @@ class Window(QMainWindow):
         v = QVBoxLayout(page)
         bar = QHBoxLayout()
         bar.addWidget(QLabel("Network-active processes"))
-        bar.addStretch()
+        self.process_search = QLineEdit()
+        self.process_search.setPlaceholderText("Search process, PID or executable…")
+        self.process_search.setMinimumWidth(170)
+        self.process_search.textChanged.connect(self.filter_processes)
+        bar.addWidget(self.process_search, 1)
         bar.addWidget(self._button("Refresh", self.refresh))
         bar.addWidget(self._button("Limit selected PID", self.limit_pid, "primary"))
         bar.addWidget(self._button("Create persistent rule", self.from_process))
@@ -281,7 +285,7 @@ class Window(QMainWindow):
         self.pause_check = QCheckBox("Pause my custom user rules and PID overrides")
         self.pause_check.toggled.connect(self.pause_changed)
         v.addWidget(self.pause_check)
-        self.system_pause = QCheckBox("Pause system-wide rules (administrator)")
+        self.system_pause = QCheckBox("Pause system-wide rules and the global default")
         self.system_pause.toggled.connect(self.system_pause_changed)
         v.addWidget(self.system_pause)
         info = QTextBrowser()
@@ -363,6 +367,12 @@ class Window(QMainWindow):
         self.banner.setText(
             "● Daemon connected — pidnl backend reachable"
             if not data["backend_error"] else f"● Backend warning: {data['backend_error']}")
+        selected_pid = None
+        selected_rule_id = None
+        if 0 <= self.process_table.currentRow() < len(self.procs):
+            selected_pid = self.procs[self.process_table.currentRow()]["pid"]
+        if 0 <= self.rule_table.currentRow() < len(self.rules):
+            selected_rule_id = self.rules[self.rule_table.currentRow()]["id"]
         self.rules = data["rules"]
         self.procs = data["processes"]
         self.admin = data["admin"]
@@ -385,6 +395,17 @@ class Window(QMainWindow):
         self._populate(self.rule_table, [
             [r["target"], r["scope"], self.cap(r["download_kib"]),
              self.cap(r["upload_kib"]), r["mode"]] for r in self.rules])
+        if selected_pid is not None:
+            for index, proc in enumerate(self.procs):
+                if proc["pid"] == selected_pid:
+                    self.process_table.selectRow(index)
+                    break
+        if selected_rule_id is not None:
+            for index, rule in enumerate(self.rules):
+                if rule["id"] == selected_rule_id:
+                    self.rule_table.selectRow(index)
+                    break
+        self.filter_processes()
         self.pause_check.blockSignals(True)
         self.pause_check.setChecked(self.paused)
         self.pause_check.blockSignals(False)
@@ -408,16 +429,19 @@ class Window(QMainWindow):
 
     @staticmethod
     def _populate(table, rows):
-        current = table.currentRow()
         table.setRowCount(len(rows))
         for i, row in enumerate(rows):
             for j, value in enumerate(row):
-                item = QTableWidgetItem(str(value or "—"))
+                item = QTableWidgetItem("—" if value is None or value == "" else str(value))
                 if isinstance(value, int):
                     item.setData(Qt.ItemDataRole.DisplayRole, value)
                 table.setItem(i, j, item)
-        if 0 <= current < len(rows):
-            table.selectRow(current)
+ 
+    def filter_processes(self):
+        query = self.process_search.text().strip().casefold()
+        for row, proc in enumerate(self.procs):
+            searchable = f"{proc['pid']} {proc['name']} {proc['exe']}".casefold()
+            self.process_table.setRowHidden(row, bool(query and query not in searchable))
 
     def selected(self, table, values):
         row = table.currentRow()
