@@ -1,0 +1,7 @@
+#!/usr/bin/python -I
+import sys
+sys.path.insert(0, "/usr/lib/networklimiter")
+from networklimiter.daemon import main
+
+if __name__ == "__main__":
+    main()
