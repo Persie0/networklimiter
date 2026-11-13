@@ -144,10 +144,11 @@ class Daemon:
 
     def _desired(self, proc):
         key = (proc["pid"], proc["start"])
+        paused_user = str(proc["uid"]) in self.paused_users
         override = self.overrides.get(key)
-        if override is not None and (override[0] == proc["uid"] or override[0] == 0):
+        if not paused_user and override is not None and (override[0] == proc["uid"] or override[0] == 0):
             return override[1:]
-        own = [] if str(proc["uid"]) in self.paused_users else self.users.get(str(proc["uid"]), [])
+        own = [] if paused_user else self.users.get(str(proc["uid"]), [])
         sys_rules = [] if self.paused_system else self.system
         rule = choose_rule(proc, own, sys_rules)
         return (rule["download_kib"], rule["upload_kib"]) if rule else None
@@ -165,7 +166,7 @@ class Daemon:
             known = {key[0] for key in self.applied}
         pids = network_pids | known
         catalog = [info for pid in sorted(pids) if (info := self._proc(pid)) and pid != os.getpid()]
-        # Snapshot the rules before applying without blocking client requests.
+        # Snapshot desired limits. The reentrant lock permits concurrent UI edits.
         with self.lock:
             wanted = [(p, self._desired(p), self.applied.get((p["pid"], p["start"]))) for p in catalog]
             self.backend_error = None
@@ -179,7 +180,8 @@ class Daemon:
                 # pidnl requires an active network socket before attaching.
                 continue
             # Do not act on a PID reused while running an external command.
-            if self._proc(pid) is None or self._proc(pid)["start"] != start:
+            current = self._proc(pid)
+            if current is None or current["start"] != start:
                 continue
             try:
                 if desired is None:
@@ -367,6 +369,19 @@ class Daemon:
             except OSError:
                 pass
 
+    def cleanup(self):
+        """Release only this daemon's managed PIDs on graceful exit."""
+        with self.lock:
+            active = list(self.applied)
+        for pid, start in active:
+            proc = self._proc(pid)
+            if proc is None or proc["start"] != start:
+                continue
+            try:
+                self.backend.unset_limit(pid)
+            except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+                LOG.warning("Unable to remove limit for PID %d at shutdown: %s", pid, exc)
+
     def serve(self, socket_path=SOCKET):
         if os.geteuid() != 0:
             raise PermissionError("Daemon must run as root (systemd service)")
@@ -391,7 +406,8 @@ class Daemon:
             finally:
                 self.stop.set()
                 self.wake.set()
-                thread.join(timeout=3)
+                thread.join(timeout=5)
+                self.cleanup()
                 path.unlink(missing_ok=True)
 
 
