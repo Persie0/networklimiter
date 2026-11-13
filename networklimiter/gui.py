@@ -130,7 +130,8 @@ class RuleDialog(QDialog):
                                 initial.get("upload_kib"))
         layout.addWidget(self.rates)
         note = QLabel("Each matching network-owning PID gets its own cap. "
-                      "Browser tabs often share one network-service PID.")
+                      "Set both directions to unlimited to exempt this application "
+                      "from the global default. Browser tabs often share one network-service PID.")
         note.setWordWrap(True)
         note.setObjectName("sub")
         layout.addWidget(note)
@@ -163,6 +164,7 @@ class Window(QMainWindow):
         self.admin = False
         self.paused = False
         self.quitting = False
+        self._global_last = object()
         self._build()
         self._tray()
         self.refresh()
@@ -233,6 +235,28 @@ class Window(QMainWindow):
         v.addWidget(self._button("Clear selected PID override", self.clear_pid))
         tabs.addTab(page, "Live processes")
 
+        global_page = QWidget()
+        global_layout = QVBoxLayout(global_page)
+        global_header = QLabel("DEFAULT CAP FOR EVERY NETWORK PROCESS")
+        global_header.setObjectName("hero")
+        global_layout.addWidget(global_header)
+        global_info = QLabel(
+            "If enabled, each detected network-owning PID receives its own speed limit. "
+            "This includes system services, Brave and root-owned package updates. "
+            "Saved app rules override this default; an app rule with both directions "
+            "unlimited exempts that application. Use cautiously: limiting system "
+            "processes can affect connectivity.")
+        global_info.setWordWrap(True)
+        global_info.setObjectName("sub")
+        global_layout.addWidget(global_info)
+        self.global_enabled = QCheckBox("Enable a default limit for all processes")
+        global_layout.addWidget(self.global_enabled)
+        self.global_rates = RateFields(100, None)
+        global_layout.addWidget(self.global_rates)
+        global_layout.addWidget(self._button("Save global default", self.apply_global, "primary"))
+        global_layout.addStretch()
+        tabs.addTab(global_page, "Global default")
+
         rule_page = QWidget()
         v = QVBoxLayout(rule_page)
         bar = QHBoxLayout()
@@ -266,7 +290,8 @@ class Window(QMainWindow):
         <h3>How limits are applied</h3>
         <p>Each network-owning Linux process (PID) is limited independently
         using cgroup/eBPF filtering. 100 KiB/s equals approximately 819 kbit/s.
-        Unmatched processes remain unlimited.</p>
+        If the global default is enabled, it limits every matching network-owning PID; "
+        "otherwise unmatched processes remain unlimited.</p>
         <h3>Important limitations</h3>
         <p>The backend is a <b>packet policer</b>, not a smooth traffic shaper.
         It drops packets when limits are exceeded. Actual download throughput may
@@ -342,6 +367,14 @@ class Window(QMainWindow):
         self.procs = data["processes"]
         self.admin = data["admin"]
         self.paused = data["paused"]
+        current_global = data.get("global_default")
+        if current_global != self._global_last:
+            self._global_last = current_global
+            self.global_enabled.setChecked(current_global is not None)
+            self._set_rate_fields(self.global_rates, current_global or
+                                  {"download_kib": 100, "upload_kib": None})
+        self.global_enabled.setEnabled(self.admin)
+        self.global_rates.setEnabled(self.admin)
         self.count_procs.setText(f"{len(self.procs)} network PIDs")
         self.count_rules.setText(f"{len(self.rules)} saved rules")
         self.count_active.setText(
@@ -362,6 +395,16 @@ class Window(QMainWindow):
         self.tray_pause.blockSignals(True)
         self.tray_pause.setChecked(self.paused)
         self.tray_pause.blockSignals(False)
+
+    @staticmethod
+    def _set_rate_fields(fields, values):
+        down, up = values.get("download_kib"), values.get("upload_kib")
+        fields.no_download.setChecked(down is None)
+        fields.no_upload.setChecked(up is None)
+        if down is not None:
+            fields.download.setValue(down)
+        if up is not None:
+            fields.upload.setValue(up)
 
     @staticmethod
     def _populate(table, rows):
@@ -440,6 +483,27 @@ class Window(QMainWindow):
 
     def tray_pause_changed(self, checked):
         self.pause_changed(checked)
+
+    def apply_global(self):
+        if not self.admin:
+            QMessageBox.warning(self, "Administrator required",
+                                "Join networklimiter-admin and sign out/in first.")
+            return
+        enabled = self.global_enabled.isChecked()
+        data = self.global_rates.limits() if enabled else {}
+        if enabled and data["download_kib"] is None and data["upload_kib"] is None:
+            QMessageBox.warning(self, "No limit", "Choose at least one global limit.")
+            return
+        if enabled and self._global_last is None:
+            answer = QMessageBox.question(
+                self, "Limit system processes too?",
+                "This default applies to ALL network processes, including system services. "
+                "It may disrupt connectivity. Continue?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        if self.invoke("set_global", enabled=enabled, **data) is not None:
+            self.refresh()
 
     def system_pause_changed(self, checked):
         if self.invoke("pause", enabled=checked, scope="system") is not None:
