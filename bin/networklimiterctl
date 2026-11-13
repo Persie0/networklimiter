@@ -1,0 +1,22 @@
+#!/usr/bin/python -I
+"""Command-line administrative client."""
+import argparse
+import json
+import sys
+sys.path.insert(0, "/usr/lib/networklimiter")
+from networklimiter.client import request, ClientError
+
+p = argparse.ArgumentParser()
+p.add_argument("op", choices=["status", "pause", "resume"])
+p.add_argument("--system", action="store_true", help="Target system rules (requires admin group)")
+a = p.parse_args()
+try:
+    result = request(
+        "status" if a.op == "status" else "pause",
+        **({} if a.op == "status" else {
+            "enabled": a.op == "pause", "scope": "system" if a.system else "user"
+        }),
+    )
+    print(json.dumps(result, indent=2))
+except ClientError as exc:
+    p.exit(1, f"networklimiterctl: {exc}\n")
