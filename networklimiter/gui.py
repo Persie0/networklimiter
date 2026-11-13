@@ -226,7 +226,7 @@ class Window(QMainWindow):
         self.process_search = QLineEdit()
         self.process_search.setPlaceholderText("Search process, PID or executable…")
         self.process_search.setMinimumWidth(170)
-        self.process_search.textChanged.connect(self.filter_processes)
+        self.process_search.textChanged.connect(lambda _: self.filter_processes())
         bar.addWidget(self.process_search, 1)
         bar.addWidget(self._button("Refresh", self.refresh))
         bar.addWidget(self._button("Limit selected PID", self.limit_pid, "primary"))
