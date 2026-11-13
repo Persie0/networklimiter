@@ -81,6 +81,7 @@ class Daemon:
         self.lock = threading.RLock()
         self.wake = threading.Event()
         self.stop = threading.Event()
+        self.client_slots = threading.BoundedSemaphore(16)
         self.users = {}
         self.system = []
         self.global_default = None
@@ -398,6 +399,12 @@ class Daemon:
                 return {"paused": enabled, "scope": scope}
         raise RuleError("Unknown operation")
 
+    def _client_worker(self, conn):
+        try:
+            self.serve_client(conn)
+        finally:
+            self.client_slots.release()
+
     def serve_client(self, conn):
         with conn:
             try:
@@ -462,11 +469,21 @@ class Daemon:
                         conn, _ = server.accept()
                     except socket.timeout:
                         continue
-                    threading.Thread(target=self.serve_client, args=(conn,), daemon=True).start()
+                    if not self.client_slots.acquire(blocking=False):
+                        conn.close()
+                        continue
+                    try:
+                        threading.Thread(target=self._client_worker, args=(conn,), daemon=True).start()
+                    except RuntimeError:
+                        self.client_slots.release()
+                        conn.close()
+                        raise
             finally:
                 self.stop.set()
                 self.wake.set()
-                thread.join(timeout=5)
+                # Never run cleanup concurrently with a scan which might
+                # still be attaching BPF links after a slow backend call.
+                thread.join()
                 self.cleanup()
                 path.unlink(missing_ok=True)
 
