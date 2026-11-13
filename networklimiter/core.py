@@ -46,8 +46,7 @@ def normalize_rule(raw, *, owner, scope, id_override=None):
     else:
         raise RuleError("Mode must be exe or name")
     down, up = limit(raw.get("download_kib")), limit(raw.get("upload_kib"))
-    if down is None and up is None:
-        raise RuleError("At least one direction must have a limit")
+    # Both directions unlimited is an explicit exception to a global default.
     return {
         "id": id_override or uuid.uuid4().hex,
         "owner": int(owner),
