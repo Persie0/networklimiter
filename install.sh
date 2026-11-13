@@ -68,7 +68,8 @@ mkdir -p "$HOME/.config/autostart"
 cp "$ROOT/packaging/networklimiter.desktop" "$HOME/.config/autostart/networklimiter.desktop"
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now networklimiter.service
+sudo systemctl enable networklimiter.service
+sudo systemctl restart networklimiter.service
 
 echo
 echo "Installed. Launch from your app menu or run: networklimiter"
