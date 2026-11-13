@@ -113,6 +113,20 @@ class Daemon:
                 LOG.error("Ignoring malformed global default in state file")
         self.paused_users = set(data.get("paused_users", []))
         self.paused_system = bool(data.get("paused_system", False))
+        # Reconcile kernel limits left behind if the daemon was killed while
+        # processes were still alive. The PID's start timestamp avoids reuse.
+        for record in data.get("applied", []):
+            try:
+                pid = record["pid"]
+                start = record["start"]
+                down = limit(record.get("download_kib"))
+                up = limit(record.get("upload_kib"))
+                if (isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+                        and isinstance(start, (int, float)) and start > 0
+                        and (down is not None or up is not None)):
+                    self.applied[(pid, float(start))] = (down, up)
+            except (TypeError, ValueError, KeyError, RuleError):
+                LOG.warning("Ignoring malformed applied PID journal record")
 
     def _save(self):
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -122,6 +136,11 @@ class Daemon:
             "global_default": self.global_default,
             "paused_users": sorted(self.paused_users),
             "paused_system": self.paused_system,
+            "applied": [
+                {"pid": pid, "start": start,
+                 "download_kib": rates[0], "upload_kib": rates[1]}
+                for (pid, start), rates in sorted(self.applied.items())
+            ],
         }, indent=2)
         fd, temp = tempfile.mkstemp(prefix=".state-", dir=str(self.path.parent))
         try:
@@ -210,6 +229,7 @@ class Daemon:
                         self.applied.pop(key, None)
                     else:
                         self.applied[key] = desired
+                    self._save()
             except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
                 with self.lock:
                     self.backend_error = f"PID {pid}: {exc}"
@@ -217,9 +237,11 @@ class Daemon:
 
         live = {(p["pid"], p["start"]) for p in catalog}
         with self.lock:
-            for key in list(self.applied):
-                if key not in live:
-                    self.applied.pop(key)
+            stale = [key for key in self.applied if key not in live]
+            for key in stale:
+                self.applied.pop(key)
+            if stale:
+                self._save()
             for key in list(self.overrides):
                 if key not in live:
                     # An override may be waiting for its process to open a socket.
@@ -414,6 +436,9 @@ class Daemon:
                 continue
             try:
                 self.backend.unset_limit(pid)
+                with self.lock:
+                    self.applied.pop((pid, start), None)
+                    self._save()
             except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
                 LOG.warning("Unable to remove limit for PID %d at shutdown: %s", pid, exc)
 
