@@ -1,6 +1,6 @@
 # NetworkLimiter
 
-Native **CachyOS / Arch Linux** per-process download and upload limits. Includes a Qt 6 settings window, KDE Plasma system tray, persistent rules, systemd background daemon and automatic desktop startup. **No browser extension.**
+Native **CachyOS / Arch Linux** per-process download and upload limits. Includes a Qt 6 settings window, KDE Plasma system tray, an optional **global default per-PID cap**, persistent executable overrides, systemd background daemon and automatic desktop startup. **No browser extension.**
 
 > **Status: initial implementation, not yet validated on a CachyOS machine.** The underlying [pidnl](https://github.com/ariasmn/pidnl) backend is a packet **policer**: traffic exceeding a limit is dropped rather than smoothly queued. Actual transfer rates can vary, especially with QUIC/UDP.
 
@@ -10,6 +10,7 @@ A saved rule applies to **each separate network-owning PID** matching an executa
 
 | Target | Rule | Outcome |
 |---|---|---|
+| All processes (optional default) | Download 100 KiB/s | Each detected network-owning PID gets a separate ~100 KiB/s cap |
 | Two independent `curl` processes | `/usr/bin/curl`, download 100 KiB/s | Each process gets its own ~100 KiB/s limit |
 | Brave network-service process | Brave executable path, download 100 KiB/s | This network-service process is capped |
 | System updater | `/usr/bin/pacman`, download 1024 KiB/s | Root-owned updates capped at ~1 MiB/s; administrator rule required |
@@ -42,11 +43,13 @@ Launch `networklimiter` from your app menu or a terminal. Closing the window min
 
 ## Configure rules
 
-In **Persistent rules → Add rule**, choose either an exact executable path or a process name. Select **My processes** (your user) or **All users** (admin group required) and set download/upload caps. Rules persist across logout, application restarts and system reboot.
+**Global default** is disabled by default. In the **Global default** tab, enable the cap and select the maximum download/upload speed for **each** network-owning process, including root system services. This requires administrator group membership and can interfere with system networking. If you only need a few apps limited, leave the global default disabled and define specific rules instead.
+
+In **Persistent rules → Add rule**, choose either an exact executable path or a process name. Select **My processes** (your user) or **All users** (admin group required) and set download/upload caps. Rules persist across logout, application restarts and system reboot. **Executable rules take precedence over the global default.** Set both directions to unlimited in an app rule to exempt it from the global default.
 
 In **Live processes**, you can select a network-active PID to apply or clear a **temporary PID override**. Temporary overrides are lost at service restart or when the process exits. A matching saved rule is automatically reapplied afterward. The service checks newly active network processes approximately every three seconds, so the beginning of a new connection may not be limited.
 
-The tray menu offers **Open**, **Pause my limits**, and **Quit tray**. Pausing personal rules also pauses that user's temporary overrides. System-wide rules require separately pausing them through administrator controls.
+The tray menu offers **Open**, **Pause my personal rules**, and **Quit tray**. Pausing personal rules also pauses that user's temporary overrides; **it does not disable system rules or the global default**. Administrator controls can pause all system-wide rules and the global default separately.
 
 ## Status and diagnostics
 
@@ -82,6 +85,6 @@ Uninstall does not remove the separately installed pidnl package, nor does it de
 python -m unittest discover -s tests -v
 ```
 
-The unit tests cover rule validation, matching, rate units and daemon rule precedence. Kernel networking, Qt interaction, session startup and the exact upstream pidnl binary still need CachyOS integration testing before declaring a stable release.
+The unit tests cover rule validation, matching, global defaults, rate units, permissions and daemon rule precedence. Kernel networking, Qt interaction, session startup and the exact upstream pidnl binary still need CachyOS integration testing before declaring a stable release.
 
 This project's own source is licensed under MIT (`LICENSE`). The independently packaged pidnl backend has its own [GPL-3.0 license](https://github.com/ariasmn/pidnl/blob/main/LICENSE).
