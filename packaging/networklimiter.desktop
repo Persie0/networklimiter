@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=NetworkLimiter
+GenericName=Per-process bandwidth manager
+Comment=Configure per-PID download and upload limits
+Exec=/usr/bin/networklimiter --tray
+Icon=network-wired
+Categories=Network;System;Utility;
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
