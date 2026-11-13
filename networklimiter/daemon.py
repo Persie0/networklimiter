@@ -208,6 +208,8 @@ class Daemon:
             self.backend_error = None
 
         for proc, desired, previous in wanted:
+            if self.stop.is_set():
+                break
             pid, start = proc["pid"], proc["start"]
             key = (pid, start)
             if desired == previous:
