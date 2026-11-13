@@ -83,6 +83,7 @@ class Daemon:
         self.stop = threading.Event()
         self.users = {}
         self.system = []
+        self.global_default = None
         self.paused_users = set()
         self.paused_system = False
         self.overrides = {}  # (pid, start_time) -> (uid, download_kib, upload_kib)
@@ -102,6 +103,14 @@ class Daemon:
             return
         self.users = data.get("users", {})
         self.system = data.get("system", [])
+        default = data.get("global_default")
+        if isinstance(default, dict):
+            try:
+                down, up = limit(default.get("download_kib")), limit(default.get("upload_kib"))
+                if down is not None or up is not None:
+                    self.global_default = {"download_kib": down, "upload_kib": up}
+            except RuleError:
+                LOG.error("Ignoring malformed global default in state file")
         self.paused_users = set(data.get("paused_users", []))
         self.paused_system = bool(data.get("paused_system", False))
 
@@ -110,6 +119,7 @@ class Daemon:
         content = json.dumps({
             "users": self.users,
             "system": self.system,
+            "global_default": self.global_default,
             "paused_users": sorted(self.paused_users),
             "paused_system": self.paused_system,
         }, indent=2)
@@ -151,7 +161,13 @@ class Daemon:
         own = [] if paused_user else self.users.get(str(proc["uid"]), [])
         sys_rules = [] if self.paused_system else self.system
         rule = choose_rule(proc, own, sys_rules)
-        return (rule["download_kib"], rule["upload_kib"]) if rule else None
+        if rule:
+            # Explicit unlimited rule is an exception to the global cap.
+            down, up = rule["download_kib"], rule["upload_kib"]
+            return (down, up) if down is not None or up is not None else None
+        if self.global_default and not self.paused_system:
+            return (self.global_default["download_kib"], self.global_default["upload_kib"])
+        return None
 
     def scan(self):
         try:
@@ -254,9 +270,28 @@ class Daemon:
                     "processes": visible[:600],
                     "paused": str(uid) in self.paused_users,
                     "paused_system": self.paused_system,
+                    "global_default": self.global_default,
                     "admin": admin,
                     "backend_error": self.backend_error,
                 }
+
+            if op == "set_global":
+                if not admin:
+                    raise PermissionError("Global default requires networklimiter-admin")
+                enabled = request.get("enabled")
+                if not isinstance(enabled, bool):
+                    raise RuleError("Enabled must be a boolean")
+                if enabled:
+                    down = limit(request.get("download_kib"))
+                    up = limit(request.get("upload_kib"))
+                    if down is None and up is None:
+                        raise RuleError("Global default must limit at least one direction")
+                    self.global_default = {"download_kib": down, "upload_kib": up}
+                else:
+                    self.global_default = None
+                self._save()
+                self.wake.set()
+                return {"global_default": self.global_default}
 
             if op == "upsert_rule":
                 raw = request.get("rule")
