@@ -81,6 +81,56 @@ class DaemonTests(unittest.TestCase):
                 "target": "curl", "download_kib": 1,
             }}, uid=1000, admin=False)
 
+    def test_limit_journal_recovers_after_abrupt_restart(self):
+        class TrackingBackend:
+            def __init__(self):
+                self.set_calls = []
+                self.unset_calls = []
+
+            def active_pids(self):
+                return {1234}
+
+            def set_limit(self, pid, upload, download):
+                self.set_calls.append((pid, upload, download))
+
+            def unset_limit(self, pid):
+                self.unset_calls.append(pid)
+
+        backend = TrackingBackend()
+        self.daemon.backend = backend
+        self.daemon._proc = lambda pid: dict(self.proc) if pid == 1234 else None
+        self.daemon.users["1000"] = [self.rule(down=100)]
+        self.daemon.scan()
+        self.assertEqual(backend.set_calls, [(1234, None, 100)])
+        self.assertIn((1234, 50.0), self.daemon.applied)
+
+        # Simulate a crash: a new daemon inherits the saved PID/start journal.
+        replacement = Daemon(state_path=self.path, backend=backend)
+        replacement._proc = self.daemon._proc
+        self.assertIn((1234, 50.0), replacement.applied)
+        replacement.users["1000"] = []
+        replacement.scan()
+        self.assertEqual(backend.unset_calls, [1234])
+        self.assertEqual(replacement.applied, {})
+
+    def test_journal_does_not_apply_to_recycled_pid(self):
+        class TrackingBackend:
+            def active_pids(self):
+                return {1234}
+
+            def set_limit(self, *args):
+                raise AssertionError("Should not limit a new process")
+
+            def unset_limit(self, *args):
+                raise AssertionError("Should not unset a reused PID")
+
+        self.daemon.applied[(1234, 50.0)] = (100, None)
+        self.daemon._save()
+        restored = Daemon(state_path=self.path, backend=TrackingBackend())
+        restored._proc = lambda pid: {**self.proc, "start": 100.0}
+        restored.scan()
+        self.assertEqual(restored.applied, {})
+
     def test_settings_persist_across_restarts(self):
         self.daemon.handle({"op": "set_global", "enabled": True,
                             "download_kib": 128, "upload_kib": None},
