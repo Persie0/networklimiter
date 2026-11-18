@@ -255,7 +255,7 @@ class Daemon:
                 self.scan()
             except Exception:
                 LOG.exception("Unexpected background scan failure")
-            self.wake.wait(timeout=3)
+            self.wake.wait(timeout=1)
             self.wake.clear()
 
     def handle(self, request, *, admin):
