@@ -65,7 +65,7 @@ A previous enabled global download setting is migrated when possible. Otherwise 
 
 ## Limitations and implementation
 
-The background service observes network-active processes at approximately 3-second intervals and applies the same speed to each detected PID. Brief network bursts may happen before detection. The underlying GPLv3 [pidnl](https://github.com/ariasmn/pidnl) backend uses Linux cgroup v2 and eBPF ingress packet policing. This **drops** excess packets rather than smoothly queuing them. Actual transfers can be uneven (particularly QUIC/UDP), so values are approximate rather than exact physical speed guarantees. cgroup moves can affect process grouping.
+The background service observes network-active processes at approximately one-second intervals and applies the same speed to each detected PID. Brief network bursts may happen before detection. The underlying GPLv3 [pidnl](https://github.com/ariasmn/pidnl) backend uses Linux cgroup v2 and eBPF ingress packet policing. This **drops** excess packets rather than smoothly queuing them. Actual transfers can be uneven (particularly QUIC/UDP), so values are approximate rather than exact physical speed guarantees. cgroup moves can affect process grouping.
 
 The Qt6 GUI runs unprivileged; the root-owned systemd service exposes only **status** and **set_global** on a local Unix socket. Writes are authorized using the peer's process credentials and membership of `networklimiter-admin`. No outbound telemetry is collected.
 
