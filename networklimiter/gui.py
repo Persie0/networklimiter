@@ -252,7 +252,8 @@ class Window(QMainWindow):
         self.loading = True
         try:
             self.toggle.setChecked(self.enabled)
-            if not self.save_timer.isActive():
+            if not self.save_timer.isActive() and not self.speed.hasFocus():
+                # Never overwrite a number while someone is typing it.
                 self._show_rate(self.backend_rate)
                 self._pending_rate = self.backend_rate
             self.tray_toggle.setChecked(self.enabled)
