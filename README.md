@@ -1,26 +1,33 @@
-# NetworkLimiter
+# NetworkLimiter — global per-process speed limit
 
-Native **CachyOS / Arch Linux** per-process download and upload limits. Includes a Qt 6 settings window, KDE Plasma system tray, an optional **global default per-PID cap**, persistent executable overrides, systemd background daemon and automatic desktop startup. **No browser extension.**
+A simple **CachyOS / Arch Linux** network limiter with a KDE Plasma-friendly Qt window and system tray.
 
-> **Status: initial implementation, not yet validated on a CachyOS machine.** The underlying [pidnl](https://github.com/ariasmn/pidnl) backend is a packet **policer**: traffic exceeding a limit is dropped rather than smoothly queued. Actual transfer rates can vary, especially with QUIC/UDP.
+**Just two controls:**
+1. **Enable speed limit** — turn the global limit on or off.
+2. **Maximum download speed per process** — enter a number and select KiB/s or MiB/s.
 
-## How process rules work
+Settings save automatically. There are **no per-application lists, PID controls, exceptions, upload settings, or browser extensions**.
 
-A saved rule applies to **each separate network-owning PID** matching an executable path or process name, not one pooled allowance.
+## What "global per-process" means
 
-| Target | Rule | Outcome |
-|---|---|---|
-| All processes (optional default) | Download 100 KiB/s | Each detected network-owning PID gets a separate ~100 KiB/s cap |
-| Two independent `curl` processes | `/usr/bin/curl`, download 100 KiB/s | Each process gets its own ~100 KiB/s limit |
-| Brave network-service process | Brave executable path, download 100 KiB/s | This network-service process is capped |
-| System updater | `/usr/bin/pacman`, download 1024 KiB/s | Root-owned updates capped at ~1 MiB/s; administrator rule required |
-| Other processes with no matching rule | None | Unlimited |
+The same limit is applied **independently to each detected network-owning Linux PID**. This is **not** a limit on the combined speed of your entire computer.
 
-**Brave tabs are not separate network processes.** Brave/Chromium generally routes multiple tabs through a shared network-service process. Therefore this app **cannot** independently cap Tab 1 at 100 KiB/s and Tab 2 at 100 KiB/s using only per-PID controls. If both tabs share one network process, they **share the process's total 100 KiB/s cap**. This application does not include or install any browser extension.
+For example, set the limit to **1 MiB/s**:
 
-**Units:** Rates in the UI are KiB/s (1024 bytes per second). **100 KiB/s ≈ 819 kbit/s**, **1 MiB/s = 1024 KiB/s**. Upload and download limits are independent; either direction can be left unlimited.
+| Network-owning process | Approx. maximum download |
+|---|---:|
+| Browser's network-service process | 1 MiB/s |
+| System updater (`pacman`) | 1 MiB/s |
+| A separate download process | 1 MiB/s |
+| Another separate download process | 1 MiB/s |
 
-## Install on CachyOS / Arch
+Each process has its own allowance. **Upload is unlimited.**
+
+**Brave/Chromium caveat:** tabs often share one network-service process. Two tabs sharing the same PID share its download limit, rather than each having a separate allowance. Independent per-tab limits are not supported without browser integration, which is intentionally not included.
+
+Internally, 1 MiB/s = 1024 KiB/s = 1,048,576 bytes/s. The UI can also be set to e.g. 100 KiB/s. Decimal **MB/s** and binary **MiB/s** are different units.
+
+## Install on CachyOS
 
 ```bash
 git clone https://github.com/Persie0/networklimiter.git
@@ -28,63 +35,54 @@ cd networklimiter
 bash install.sh
 ```
 
-Run the installer as your **regular desktop user**, not with `sudo` (it requests sudo when necessary). Currently supports **x86_64**. The installer:
+Run the installer **as your desktop user**, without `sudo`; it requests sudo when required. Currently targets **x86_64**. It installs official Qt/Python dependencies and a SHA-256-verified upstream `pidnl` package if needed. `libcgroup` might require an installed AUR helper (`paru` or `yay`).
 
-1. Installs Qt, Python and network dependencies from pacman.
-2. Installs libcgroup (from configured repositories or using an available `paru`/`yay` AUR helper), if missing.
-3. Installs the **SHA-256-verified upstream pidnl 0.1.1 package** if `pidnl` is not installed already.
-4. Copies the NetworkLimiter executables and creates/enables `networklimiter.service` at boot.
-5. Registers the desktop entry and KDE-compatible XDG login autostart entry.
-6. Adds your user to the `networklimiter-admin` group for optional system-wide rules.
+The installer enables the background systemd service at boot, registers a desktop entry, and enables tray autostart on login. It adds your account to the local `networklimiter-admin` group to allow changing the system-wide limit.
 
-**Sign out and back in after installation** to activate new admin group membership. Membership gives permission to set limits for any user's processes, including root, so only give it to trusted users.
+**Sign out and sign back in once after installation** for the system-wide toggle to become editable. The group is privileged: its members can modify bandwidth restrictions on system/root processes. Do not grant it to untrusted users.
 
-Launch `networklimiter` from your app menu or a terminal. Closing the window minimizes to the tray; selecting **Quit tray** does **not** stop the service or release the saved rules.
+Run `networklimiter` from your application menu or terminal. Closing the window keeps it in the system tray. The tray's **Enable speed limit** checkbox controls the **same global setting**, not a separate per-user limit. Quitting the tray does not stop the system service or erase settings.
 
-## Configure rules
+## Optional terminal controls
 
-**Global default** is disabled by default. In the **Global default** tab, enable the cap and select the maximum download/upload speed for **each** network-owning process, including root system services. This requires administrator group membership and can interfere with system networking. If you only need a few apps limited, leave the global default disabled and define specific rules instead.
+```bash
+networklimiterctl status
+networklimiterctl enable 1024   # 1024 KiB/s download per PID
+networklimiterctl disable       # Unlimited downloads again
+```
 
-In **Persistent rules → Add rule**, choose either an exact executable path or a process name. Select **My processes** (your user) or **All users** (admin group required) and set download/upload caps. Rules persist across logout, application restarts and system reboot. **Executable rules take precedence over the global default.** Set both directions to unlimited in an app rule to exempt it from the global default.
+## Updating existing installations
 
-In **Live processes**, you can select a network-active PID to apply or clear a **temporary PID override**. Temporary overrides are lost at service restart or when the process exits. A matching saved rule is automatically reapplied afterward. The service checks newly active network processes approximately every three seconds, so the beginning of a new connection may not be limited.
+```bash
+cd networklimiter
+git pull --ff-only
+bash install.sh
+```
 
-The tray menu offers **Open**, **Pause my personal rules**, and **Quit tray**. Pausing personal rules also pauses that user's temporary overrides; **it does not disable system rules or the global default**. Administrator controls can pause all system-wide rules and the global default separately.
+The previous version offered separate user/PID/executable rules. **These are now intentionally unsupported.** On the next daemon start, any old saved app-specific rules are ignored; previously journaled PID limits are reconciled and removed or replaced with the single global limit.
 
-## Status and diagnostics
+A previous enabled global download setting is migrated when possible. Otherwise the limiter starts **disabled**, with 1 MiB/s selected by default.
+
+## Limitations and implementation
+
+The background service observes network-active processes at approximately one-second intervals and applies the same speed to each detected PID. Brief network bursts may happen before detection. The underlying GPLv3 [pidnl](https://github.com/ariasmn/pidnl) backend uses Linux cgroup v2 and eBPF ingress packet policing. This **drops** excess packets rather than smoothly queuing them. Actual transfers can be uneven (particularly QUIC/UDP), so values are approximate rather than exact physical speed guarantees. cgroup moves can affect process grouping.
+
+The Qt6 GUI runs unprivileged; the root-owned systemd service exposes only **status** and **set_global** on a local Unix socket. Writes are authorized using the peer's process credentials and membership of `networklimiter-admin`. No outbound telemetry is collected.
+
+State is stored at `/var/lib/networklimiter/state.json`, mode 0600. It includes an applied-PID journal for recovery after unexpected restarts. The service attempts to release its limits when stopped normally.
+
+For diagnostics:
 
 ```bash
 systemctl status networklimiter.service
 journalctl -u networklimiter.service -f
-networklimiterctl status
-networklimiterctl pause
-networklimiterctl resume
-```
-
-To uninstall:
-
-```bash
-bash uninstall.sh
-```
-
-Uninstall does not remove the separately installed pidnl package, nor does it delete `/var/lib/networklimiter/state.json` or your desktop user's admin group membership.
-
-## Architecture and limitations
-
-- **GUI:** PySide6/Qt6, themed desktop window and standard system-tray icon. No GUI runs as root.
-- **Daemon:** root-owned systemd service with a local Unix control socket; no TCP listening socket or network telemetry.
-- **Authorization:** users can change their own per-executable rules and own unprivileged PIDs. Members of `networklimiter-admin` may also set system rules or change root-owned PIDs.
-- **Storage:** `/var/lib/networklimiter/state.json`, root-owned, mode 0600; updates use atomic file replacement.
-- **Kernel:** pidnl moves network-owning PIDs to cgroups and uses eBPF ingress/egress packet policers; this can affect process grouping managed by systemd. Packet drops can reduce throughput unevenly. Exact speed guarantees are **not** provided. The Linux rate-limit backend is an independent GPL-3.0 project and is not bundled.
-- **Matching:** app rules match executable path or process name; independently spawned helper executables may require their own rule. There is no direct browser-tab detection.
-- **Lifecycle:** the daemon attempts to remove its owned active PID limits during graceful shutdown. Forced termination or upstream backend failures can leave pinned kernel limits; review pidnl status and cleanup procedures when troubleshooting.
-
-## Development
-
-```bash
 python -m unittest discover -s tests -v
 ```
 
-The unit tests cover rule validation, matching, global defaults, rate units, permissions and daemon rule precedence. Kernel networking, Qt interaction, session startup and the exact upstream pidnl binary still need CachyOS integration testing before declaring a stable release.
+For removal run `bash uninstall.sh`. This leaves the separately installed pidnl package, system group membership, and saved settings in place.
 
-This project's own source is licensed under MIT (`LICENSE`). The independently packaged pidnl backend has its own [GPL-3.0 license](https://github.com/ariasmn/pidnl/blob/main/LICENSE).
+**Status:** Initial implementation; full kernel and KDE integration still needs testing on an actual CachyOS machine.
+
+## License
+
+The code in this repository is MIT licensed. The separately installed [pidnl backend](https://github.com/ariasmn/pidnl) is GPL-3.0.

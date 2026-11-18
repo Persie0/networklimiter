@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Name=NetworkLimiter
-GenericName=Per-process bandwidth manager
-Comment=Configure per-PID download and upload limits
+GenericName=Global per-process download limiter
+Comment=One download speed limit for every network process
 Exec=/usr/bin/networklimiter --tray
 Icon=network-wired
 Categories=Network;System;Utility;
