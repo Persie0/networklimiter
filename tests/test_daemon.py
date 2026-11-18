@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from networklimiter.daemon import Daemon
+from networklimiter.daemon import Backend, Daemon
 
 
 class FakeBackend:
@@ -40,6 +40,13 @@ class DaemonTests(unittest.TestCase):
             {"op": "set_global", "enabled": enabled, "download_kib": rate},
             admin=True,
         )
+
+    def test_backend_limits_download_only(self):
+        backend = Backend()
+        calls = []
+        backend.call = lambda *args: calls.append(args)
+        backend.set_limit(11111, 1024)
+        self.assertEqual(calls, [("limit", "set", 11111, "-1", "8389")])
 
     def test_defaults_off_but_rate_remembered(self):
         status = self.daemon.handle({"op": "status"}, admin=False)
