@@ -1,22 +1,36 @@
 #!/usr/bin/python -I
-"""Command-line administrative client."""
+"""Optional CLI for NetworkLimiter's single global setting."""
 import argparse
 import json
 import sys
-sys.path.insert(0, "/usr/lib/networklimiter")
-from networklimiter.client import request, ClientError
 
-p = argparse.ArgumentParser()
-p.add_argument("op", choices=["status", "pause", "resume"])
-p.add_argument("--system", action="store_true", help="Target system rules (requires admin group)")
-a = p.parse_args()
-try:
-    result = request(
-        "status" if a.op == "status" else "pause",
-        **({} if a.op == "status" else {
-            "enabled": a.op == "pause", "scope": "system" if a.system else "user"
-        }),
+sys.path.insert(0, "/usr/lib/networklimiter")
+from networklimiter.client import ClientError, request
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Enable or disable the same download cap for every network process"
     )
-    print(json.dumps(result, indent=2))
-except ClientError as exc:
-    p.exit(1, f"networklimiterctl: {exc}\n")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("status", help="Show the current global cap and backend state")
+    on = sub.add_parser("enable", help="Enable at a given speed")
+    on.add_argument("kib", type=int, help="Download limit per process in KiB/s")
+    sub.add_parser("disable", help="Disable the limit (retain configured speed)")
+    args = parser.parse_args()
+
+    try:
+        if args.command == "status":
+            value = request("status")
+        elif args.command == "enable":
+            value = request("set_global", enabled=True, download_kib=args.kib)
+        else:
+            rate = request("status")["download_kib"]
+            value = request("set_global", enabled=False, download_kib=rate)
+        print(json.dumps(value, indent=2))
+    except ClientError as exc:
+        parser.exit(1, f"NetworkLimiter: {exc}\n")
+
+
+if __name__ == "__main__":
+    main()
