@@ -1,142 +1,172 @@
+"""Global-only daemon tests with an in-memory kernel backend."""
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from networklimiter.core import normalize_rule
 from networklimiter.daemon import Daemon
 
 
 class FakeBackend:
-    def active_pids(self):
-        return set()
+    def __init__(self, pids=()):
+        self.pids = set(pids)
+        self.set_calls = []
+        self.unset_calls = []
 
-    def set_limit(self, pid, upload, download):
-        raise AssertionError("No kernel traffic expected in unit tests")
+    def active_pids(self):
+        return set(self.pids)
+
+    def set_limit(self, pid, download_kib):
+        self.set_calls.append((pid, download_kib))
 
     def unset_limit(self, pid):
-        raise AssertionError("No kernel traffic expected in unit tests")
+        self.unset_calls.append(pid)
 
 
 class DaemonTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.path = Path(self.temp.name) / "state.json"
-        self.daemon = Daemon(state_path=self.path, backend=FakeBackend())
-        self.proc = {
-            "pid": 1234, "start": 50.0, "uid": 1000, "privileged": False,
-            "name": "curl", "exe": "/usr/bin/curl",
-        }
-        self.admin = True
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "state.json"
+        self.backend = FakeBackend((11111, 11112))
+        self.daemon = Daemon(state_path=self.path, backend=self.backend)
+        self.starts = {11111: 10.1, 11112: 20.2}
+        self.daemon._process_start = lambda pid: self.starts.get(pid)
 
     def tearDown(self):
-        self.temp.cleanup()
+        self.tmp.cleanup()
 
-    def rule(self, name="curl", down=100, owner=1000, scope="user"):
-        return normalize_rule(
-            {"mode": "name", "target": name, "download_kib": down},
-            owner=owner, scope=scope,
+    def set_global(self, enabled=True, rate=100):
+        return self.daemon.handle(
+            {"op": "set_global", "enabled": enabled, "download_kib": rate},
+            admin=True,
         )
 
-    def test_default_is_off(self):
-        self.assertIsNone(self.daemon._desired(self.proc))
+    def test_defaults_off_but_rate_remembered(self):
+        status = self.daemon.handle({"op": "status"}, admin=False)
+        self.assertFalse(status["enabled"])
+        self.assertEqual(status["download_kib"], 1024)
+        self.assertFalse(status["admin"])
+        self.assertEqual(self.backend.set_calls, [])
 
-    def test_global_default_applies_individually(self):
-        result = self.daemon.handle(
-            {"op": "set_global", "enabled": True,
-             "download_kib": 100, "upload_kib": None},
-            uid=1000, admin=True,
-        )
-        self.assertEqual(result["global_default"]["download_kib"], 100)
-        self.assertEqual(self.daemon._desired(self.proc), (100, None))
-        second = {**self.proc, "pid": 1235, "start": 50.5}
-        self.assertEqual(self.daemon._desired(second), (100, None))
-
-    def test_global_requires_admin(self):
-        with self.assertRaises(PermissionError):
-            self.daemon.handle({"op": "set_global", "enabled": True,
-                                "download_kib": 100}, 1000, False)
-
-    def test_rule_precedence_and_exception(self):
-        self.daemon.global_default = {"download_kib": 100, "upload_kib": None}
-        self.daemon.system = [self.rule("curl", 50, 0, "system")]
-        self.assertEqual(self.daemon._desired(self.proc), (50, None))
-        self.daemon.users["1000"] = [self.rule("curl", 10)]
-        self.assertEqual(self.daemon._desired(self.proc), (10, None))
-        self.daemon.users["1000"] = [self.rule("curl", None)]
-        self.assertIsNone(self.daemon._desired(self.proc))
-
-    def test_pause_user_does_not_override_global_system_default(self):
-        self.daemon.global_default = {"download_kib": 100, "upload_kib": None}
-        self.daemon.users["1000"] = [self.rule("curl", 10)]
-        self.daemon.paused_users.add("1000")
-        self.assertEqual(self.daemon._desired(self.proc), (100, None))
-        self.daemon.paused_system = True
-        self.assertIsNone(self.daemon._desired(self.proc))
-
-    def test_unprivileged_cannot_replace_system_rules(self):
-        self.daemon.system = [self.rule("curl", 5, 0, "system")]
-        with self.assertRaises(PermissionError):
-            self.daemon.handle({"op": "upsert_rule", "rule": {
-                "scope": "system", "mode": "name",
-                "target": "curl", "download_kib": 1,
-            }}, uid=1000, admin=False)
-
-    def test_limit_journal_recovers_after_abrupt_restart(self):
-        class TrackingBackend:
-            def __init__(self):
-                self.set_calls = []
-                self.unset_calls = []
-
-            def active_pids(self):
-                return {1234}
-
-            def set_limit(self, pid, upload, download):
-                self.set_calls.append((pid, upload, download))
-
-            def unset_limit(self, pid):
-                self.unset_calls.append(pid)
-
-        backend = TrackingBackend()
-        self.daemon.backend = backend
-        self.daemon._proc = lambda pid: dict(self.proc) if pid == 1234 else None
-        self.daemon.users["1000"] = [self.rule(down=100)]
+    def test_each_pid_gets_its_own_identical_cap(self):
+        self.set_global(rate=100)
         self.daemon.scan()
-        self.assertEqual(backend.set_calls, [(1234, None, 100)])
-        self.assertIn((1234, 50.0), self.daemon.applied)
+        self.assertCountEqual(self.backend.set_calls, [(11111, 100), (11112, 100)])
+        status = self.daemon.handle({"op": "status"}, admin=False)
+        self.assertEqual(status["active_count"], 2)
+        self.assertEqual(status["limited_count"], 2)
 
-        # Simulate a crash: a new daemon inherits the saved PID/start journal.
-        replacement = Daemon(state_path=self.path, backend=backend)
-        replacement._proc = self.daemon._proc
-        self.assertIn((1234, 50.0), replacement.applied)
-        replacement.users["1000"] = []
-        replacement.scan()
-        self.assertEqual(backend.unset_calls, [1234])
-        self.assertEqual(replacement.applied, {})
+    def test_rate_change_updates_all_existing_pids(self):
+        self.set_global(rate=100)
+        self.daemon.scan()
+        self.set_global(rate=1024)
+        self.daemon.scan()
+        self.assertEqual(self.backend.set_calls[-2:], [(11111, 1024), (11112, 1024)])
 
-    def test_journal_does_not_apply_to_recycled_pid(self):
-        class TrackingBackend:
-            def active_pids(self):
-                return {1234}
+    def test_disable_unsets_all_and_retains_speed(self):
+        self.set_global(rate=100)
+        self.daemon.scan()
+        self.set_global(False, 100)
+        self.daemon.scan()
+        self.assertCountEqual(self.backend.unset_calls, [11111, 11112])
+        self.assertFalse(self.daemon.enabled)
+        self.assertEqual(self.daemon.download_kib, 100)
+        self.assertEqual(self.daemon.applied, {})
 
-            def set_limit(self, *args):
-                raise AssertionError("Should not limit a new process")
+    def test_reject_legacy_per_pid_and_per_app_endpoints(self):
+        for operation in ("set_pid", "clear_pid", "upsert_rule", "delete_rule", "pause"):
+            with self.subTest(operation=operation), self.assertRaises(ValueError):
+                self.daemon.handle({"op": operation}, admin=True)
 
-            def unset_limit(self, *args):
-                raise AssertionError("Should not unset a reused PID")
+    def test_only_admin_can_edit(self):
+        with self.assertRaises(PermissionError):
+            self.daemon.handle(
+                {"op": "set_global", "enabled": True, "download_kib": 100},
+                admin=False,
+            )
 
-        self.daemon.applied[(1234, 50.0)] = (100, None)
-        self.daemon._save()
-        restored = Daemon(state_path=self.path, backend=TrackingBackend())
-        restored._proc = lambda pid: {**self.proc, "start": 100.0}
-        restored.scan()
-        self.assertEqual(restored.applied, {})
+    def test_set_requires_boolean_toggle_and_valid_rate(self):
+        for enabled in (1, None, "true"):
+            with self.subTest(enabled=enabled), self.assertRaises(ValueError):
+                self.daemon.handle(
+                    {"op": "set_global", "enabled": enabled, "download_kib": 100},
+                    admin=True,
+                )
+        with self.assertRaises(ValueError):
+            self.daemon.handle(
+                {"op": "set_global", "enabled": True, "download_kib": 0},
+                admin=True,
+            )
 
-    def test_settings_persist_across_restarts(self):
-        self.daemon.handle({"op": "set_global", "enabled": True,
-                            "download_kib": 128, "upload_kib": None},
-                           1000, True)
+    def test_persistence_across_daemon_restart(self):
+        self.set_global(rate=2048)
         restored = Daemon(state_path=self.path, backend=FakeBackend())
-        self.assertEqual(restored.global_default["download_kib"], 128)
+        self.assertTrue(restored.enabled)
+        self.assertEqual(restored.download_kib, 2048)
+
+    def test_legacy_app_rules_are_discarded_on_upgrade(self):
+        legacy = {
+            "users": {"1000": [{"target": "/usr/bin/curl", "download_kib": 10}]},
+            "system": [{"target": "pacman", "download_kib": 50}],
+            "global_default": {"download_kib": 100, "upload_kib": None},
+            "paused_system": False,
+            "applied": [],
+        }
+        self.path.write_text(json.dumps(legacy))
+        upgraded = Daemon(state_path=self.path, backend=FakeBackend())
+        self.assertTrue(upgraded.enabled)
+        self.assertEqual(upgraded.download_kib, 100)
+        upgraded._save()
+        data = json.loads(self.path.read_text())
+        self.assertEqual(data["version"], 2)
+        self.assertNotIn("users", data)
+        self.assertNotIn("system", data)
+
+    def test_migration_old_per_process_limit_is_released(self):
+        legacy = {
+            "users": {"1000": [{"target": "curl", "download_kib": 10}]},
+            "system": [],
+            "global_default": None,
+            "applied": [
+                {"pid": 11111, "start": 10.1,
+                 "download_kib": 10, "upload_kib": None},
+            ],
+        }
+        self.path.write_text(json.dumps(legacy))
+        upgraded = Daemon(state_path=self.path, backend=self.backend)
+        upgraded._process_start = self.daemon._process_start
+        self.assertFalse(upgraded.enabled)
+        upgraded.scan()
+        self.assertEqual(self.backend.unset_calls, [11111])
+
+    def test_restarted_journal_keeps_pid_identity(self):
+        self.set_global(rate=100)
+        self.daemon.scan()
+        recovered = Daemon(state_path=self.path, backend=self.backend)
+        recovered._process_start = self.daemon._process_start
+        recovered.handle(
+            {"op": "set_global", "enabled": False, "download_kib": 100},
+            admin=True,
+        )
+        recovered.scan()
+        self.assertCountEqual(self.backend.unset_calls, [11111, 11112])
+
+    def test_recycled_pid_is_not_touched(self):
+        self.set_global(rate=100)
+        self.daemon.scan()
+        self.set_global(False, 100)
+        self.starts[11111] = 45.1
+        self.backend.pids = {11111}
+        self.daemon.scan()
+        self.assertNotIn(11111, self.backend.unset_calls)
+
+    def test_new_pid_discovered_after_first_scan(self):
+        self.set_global(rate=100)
+        self.daemon.scan()
+        self.backend.pids.add(11113)
+        self.starts[11113] = 30.3
+        self.daemon.scan()
+        self.assertIn((11113, 100), self.backend.set_calls)
 
 
 if __name__ == "__main__":
